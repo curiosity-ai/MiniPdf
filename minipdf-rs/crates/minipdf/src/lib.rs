@@ -85,15 +85,26 @@ pub fn detect_office_format(input: &[u8]) -> Result<OfficeFormat> {
     office::detect_office_format(cursor)
 }
 
+// Caps how many bytes a single zip entry may decompress to. Without this, a small,
+// highly-compressible OOXML part (a classic decompression/zip bomb) can expand to gigabytes
+// in memory since `read_to_string` otherwise reads the entry to completion unconditionally.
+const MAX_ZIP_ENTRY_BYTES: u64 = 200 * 1024 * 1024; // 200 MB
+
 fn read_zip_text<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     path: &str,
 ) -> Result<Option<String>> {
-    let Ok(mut file) = archive.by_name(path) else {
+    let Ok(file) = archive.by_name(path) else {
         return Ok(None);
     };
+    let mut limited = file.take(MAX_ZIP_ENTRY_BYTES);
     let mut text = String::new();
-    file.read_to_string(&mut text)?;
+    limited.read_to_string(&mut text)?;
+    if limited.limit() == 0 {
+        return Err(MiniPdfError::InvalidInput(format!(
+            "archive entry '{path}' exceeds the maximum allowed size ({MAX_ZIP_ENTRY_BYTES} bytes); refusing to continue reading (possible decompression bomb)"
+        )));
+    }
     Ok(Some(text))
 }
 
