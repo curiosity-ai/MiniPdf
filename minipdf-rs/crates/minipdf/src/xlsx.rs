@@ -206,13 +206,27 @@ fn read_cell_value(cell: roxmltree::Node<'_, '_>, shared_strings: &[String]) -> 
     value.to_owned()
 }
 
+// Excel's real max column ("XFD"), 1-based. Caps the column index parsed out of an
+// attacker-controlled cell reference (`r="..."` attribute) so a crafted reference like
+// "AAAAAAAAAAAAAA1" can't drive `row_values` (sized from this index) into an
+// out-of-memory allocation.
+const MAX_COLUMN_INDEX: usize = 16384;
+
 fn column_index_from_ref(cell_ref: &str) -> Option<usize> {
     let mut col = 0usize;
+    let mut letter_count = 0;
     let mut seen_letter = false;
     for ch in cell_ref.chars().filter(|ch| ch.is_ascii_alphabetic()) {
+        // A real column reference is at most 3 letters ("XFD" = 16384); stop accumulating
+        // beyond that so the multiplication below can't be driven arbitrarily large either.
+        if letter_count >= 3 {
+            break;
+        }
         seen_letter = true;
         col = col * 26 + (ch.to_ascii_uppercase() as usize - 'A' as usize + 1);
+        letter_count += 1;
     }
+    col = col.min(MAX_COLUMN_INDEX);
     seen_letter.then_some(col.saturating_sub(1))
 }
 

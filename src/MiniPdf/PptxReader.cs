@@ -215,6 +215,11 @@ internal static class PptxReader
     private const long DefaultSlideWidthEmu = 9144000;
     private const long DefaultSlideHeightEmu = 6858000;
 
+    // Caps recursion depth when walking nested p:grpSp group shapes so a crafted slide with
+    // deeply nested groups can't drive a StackOverflowException (which crashes the whole host
+    // process rather than just failing this one conversion).
+    private const int MaxGroupNestingDepth = 64;
+
     private static readonly XNamespace P = "http://schemas.openxmlformats.org/presentationml/2006/main";
     private static readonly XNamespace A = "http://schemas.openxmlformats.org/drawingml/2006/main";
     private static readonly XNamespace Dsp = "http://schemas.microsoft.com/office/drawing/2008/diagram";
@@ -331,8 +336,11 @@ internal static class PptxReader
         CoordinateMap coordinateMap,
         List<PptxElement> elements,
         Dictionary<PptxPlaceholderKey, XElement>? placeholderDefaults = null,
-        bool includePlaceholderShapes = true)
+        bool includePlaceholderShapes = true,
+        int depth = 0)
     {
+        if (depth >= MaxGroupNestingDepth) return;
+
         foreach (var child in container.Elements())
         {
             if (child.Name == P + "sp")
@@ -360,7 +368,7 @@ internal static class PptxReader
             else if (child.Name == P + "grpSp")
             {
                 var groupMap = CreateGroupMap(child.Element(P + "grpSpPr")?.Element(A + "xfrm"), coordinateMap);
-                ReadShapeTree(archive, child, relationships, themeColors, groupMap, elements, placeholderDefaults, includePlaceholderShapes);
+                ReadShapeTree(archive, child, relationships, themeColors, groupMap, elements, placeholderDefaults, includePlaceholderShapes, depth + 1);
             }
         }
     }
@@ -1519,13 +1527,13 @@ internal static class PptxReader
 
     private static XDocument LoadXml(ZipArchiveEntry entry)
     {
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         return XDocument.Load(stream, LoadOptions.None);
     }
 
     private static byte[] ReadEntryBytes(ZipArchiveEntry entry)
     {
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         using var memoryStream = new MemoryStream();
         stream.CopyTo(memoryStream);
         return memoryStream.ToArray();

@@ -12,6 +12,11 @@ namespace MiniSoftware;
 /// </summary>
 internal static class DocxReader
 {
+    // Caps recursion depth when unwrapping nested content controls / group shapes so a crafted
+    // document with thousands of nested w:sdt or wpg:grpSp elements can't drive a StackOverflowException
+    // (which, unlike other exceptions, crashes the whole host process rather than just this conversion).
+    private const int MaxNestingDepth = 64;
+
     private static readonly XNamespace W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
     private static readonly XNamespace R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
     private static readonly XNamespace WP = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
@@ -47,7 +52,7 @@ internal static class DocxReader
         {
             try
             {
-                using var s = coreEntry.Open();
+                using var s = coreEntry.OpenBounded();
                 ctx.XmlStores["{6C3C8BC8-F283-45AE-878A-BAB7291924A1}"] = XDocument.Load(s);
             }
             catch { /* ignore malformed core.xml */ }
@@ -64,7 +69,7 @@ internal static class DocxReader
             try
             {
                 XDocument props;
-                using (var s = e.Open())
+                using (var s = e.OpenBounded())
                     props = XDocument.Load(s);
                 var item = props.Descendants(dsNs + "datastoreItem").FirstOrDefault();
                 var id = item?.Attribute(dsNs + "itemID")?.Value;
@@ -73,7 +78,7 @@ internal static class DocxReader
                     path, "itemProps", "item", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                 var itemEntry = archive.GetEntry(itemPath);
                 if (itemEntry == null) continue;
-                using var s2 = itemEntry.Open();
+                using var s2 = itemEntry.OpenBounded();
                 ctx.XmlStores[id!] = XDocument.Load(s2);
             }
             catch { /* ignore individual store failures */ }
@@ -86,7 +91,7 @@ internal static class DocxReader
             try
             {
                 XDocument glossDoc;
-                using (var s = glossaryEntry.Open())
+                using (var s = glossaryEntry.OpenBounded())
                     glossDoc = XDocument.Load(s);
                 foreach (var dp in glossDoc.Descendants(W + "docPart"))
                 {
@@ -158,8 +163,10 @@ internal static class DocxReader
     /// runs are emitted instead of the cached sdtContent (which Word may have
     /// stamped with the local user name on last open).
     /// </summary>
-    private static IEnumerable<XElement> UnwrapSdt(IEnumerable<XElement> elements)
+    private static IEnumerable<XElement> UnwrapSdt(IEnumerable<XElement> elements, int depth = 0)
     {
+        if (depth >= MaxNestingDepth) yield break;
+
         foreach (var el in elements)
         {
             if (el.Name == W + "sdt")
@@ -205,7 +212,7 @@ internal static class DocxReader
 
                 if (content != null)
                 {
-                    foreach (var inner in UnwrapSdt(content.Elements()))
+                    foreach (var inner in UnwrapSdt(content.Elements(), depth + 1))
                         yield return inner;
                 }
             }
@@ -215,7 +222,7 @@ internal static class DocxReader
                 var choice = el.Element(MC + "Choice");
                 if (choice != null)
                 {
-                    foreach (var inner in UnwrapSdt(choice.Elements()))
+                    foreach (var inner in UnwrapSdt(choice.Elements(), depth + 1))
                         yield return inner;
                 }
             }
@@ -271,7 +278,7 @@ internal static class DocxReader
         {
             try
             {
-                using var settingsStream = settingsEntry.Open();
+                using var settingsStream = settingsEntry.OpenBounded();
                 var settingsDoc = XDocument.Load(settingsStream);
                 var dts = settingsDoc.Descendants(W + "defaultTabStop").FirstOrDefault();
                 var dtsVal = dts?.Attribute(W + "val")?.Value;
@@ -287,7 +294,7 @@ internal static class DocxReader
             return new DocxDocument([]);
 
         XDocument doc;
-        using (var docStream = entry.Open())
+        using (var docStream = entry.OpenBounded())
             doc = XDocument.Load(docStream);
         var body = doc.Descendants(W + "body").FirstOrDefault();
         if (body == null)
@@ -2125,7 +2132,7 @@ internal static class DocxReader
         var imageEntry = archive.GetEntry(imagePath);
         if (imageEntry == null) return null;
 
-        using var imgStream = imageEntry.Open();
+        using var imgStream = imageEntry.OpenBounded();
         using var ms = new MemoryStream();
         imgStream.CopyTo(ms);
         var data = ms.ToArray();
@@ -2463,8 +2470,11 @@ internal static class DocxReader
         long anchorOffsetX, long anchorOffsetY,
         long chOffX, long chOffY,
         long grpExtCx, long grpExtCy,
-        long chExtCx, long chExtCy)
+        long chExtCx, long chExtCy,
+        int depth = 0)
     {
+        if (depth >= MaxNestingDepth) return;
+
         foreach (var child in groupElement.Elements())
         {
             if (child.Name == WPS + "wsp")
@@ -2526,7 +2536,8 @@ internal static class DocxReader
                     mappedAnchorX, mappedAnchorY,
                     subChOffX, subChOffY,
                     mappedExtCx, mappedExtCy,
-                    subChCx, subChCy);
+                    subChCx, subChCy,
+                    depth + 1);
             }
         }
     }
@@ -3048,7 +3059,7 @@ internal static class DocxReader
         var entry = archive.GetEntry("word/theme/theme1.xml");
         if (entry == null) return colors;
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
 
         var colorScheme = doc.Descendants(A + "clrScheme").FirstOrDefault();
@@ -3448,7 +3459,7 @@ internal static class DocxReader
         var entry = archive.GetEntry(path);
         if (entry == null) return null;
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
 
         var texts = new List<string>();
@@ -3487,7 +3498,7 @@ internal static class DocxReader
         var entry = archive.GetEntry(path);
         if (entry == null) return null;
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
 
         var allRuns = new List<DocxRun>();
@@ -3529,7 +3540,7 @@ internal static class DocxReader
         var entry = archive.GetEntry(path);
         if (entry == null) return [];
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
         var shapes = new List<DocxShape>();
 
@@ -3568,7 +3579,7 @@ internal static class DocxReader
         var hfRelsPath = GetRelationshipsPath(path);
         var hfRels = ReadPartRelationships(archive, hfRelsPath);
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
         var images = new List<DocxImage>();
 
@@ -3585,7 +3596,7 @@ internal static class DocxReader
             var imgEntry = archive.GetEntry(imgPath);
             if (imgEntry == null) continue;
 
-            using var imgStream = imgEntry.Open();
+            using var imgStream = imgEntry.OpenBounded();
             using var ms = new MemoryStream();
             imgStream.CopyTo(ms);
             var data = ms.ToArray();
@@ -3691,7 +3702,7 @@ internal static class DocxReader
         var hfRelsPath = GetRelationshipsPath(path);
         var hfRels = ReadPartRelationships(archive, hfRelsPath);
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
         var root = doc.Root;
         if (root == null) return [];
@@ -3884,7 +3895,7 @@ internal static class DocxReader
         if (entry == null) return null;
 
         XDocument doc;
-        using (var stream = entry.Open())
+        using (var stream = entry.OpenBounded())
             doc = XDocument.Load(stream);
 
         var result = new Dictionary<string, DocxFootnote>();
@@ -3943,7 +3954,7 @@ internal static class DocxReader
         var entry = archive.GetEntry(relsPath);
         if (entry == null) return rels;
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
 
         foreach (var rel in doc.Descendants(REL + "Relationship"))
@@ -3964,7 +3975,7 @@ internal static class DocxReader
         var entry = archive.GetEntry("word/styles.xml");
         if (entry == null) return (styles, 0, false, null, null, new Dictionary<string, DocxTableStyleInfo>());
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
 
         // Read docDefaults for baseline paragraph/run properties
@@ -4393,7 +4404,7 @@ internal static class DocxReader
         var entry = archive.GetEntry("word/theme/theme1.xml");
         if (entry == null) return (null, null, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase), new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
 
         var fontScheme = doc.Descendants(A + "fontScheme").FirstOrDefault();
@@ -4614,7 +4625,7 @@ internal static class DocxReader
         var entry = archive.GetEntry("word/numbering.xml");
         if (entry == null) return result;
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
 
         // Read abstract numbering definitions: abstractNumId → list of level defs

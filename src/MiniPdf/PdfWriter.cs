@@ -1784,6 +1784,28 @@ internal sealed class PdfWriter
         return false;
     }
 
+    // Generous upper bound on total pixels a single embedded PNG may declare. Bounds the
+    // allocations below (pixel buffers, decompression output) against a crafted IHDR claiming
+    // an enormous width/height, while comfortably covering any real embedded image.
+    private const long MaxPngPixels = 40_000_000L; // e.g. an ~8000x5000 image
+
+    /// <summary>Copies from <paramref name="source"/> to <paramref name="destination"/>, aborting
+    /// (returning false) if more than <paramref name="maxBytes"/> would be written — guards against
+    /// decompression bombs where a small compressed stream inflates to an enormous size.</summary>
+    private static bool TryCopyWithLimit(Stream source, Stream destination, long maxBytes)
+    {
+        var buffer = new byte[81920];
+        long total = 0;
+        int read;
+        while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
+        {
+            total += read;
+            if (total > maxBytes) return false;
+            destination.Write(buffer, 0, read);
+        }
+        return true;
+    }
+
     private static bool TryDecodePngToRgb(byte[] data, out int width, out int height, out byte[] rgb, out byte[]? alpha)
     {
         width = 1; height = 1; rgb = new byte[] { 255, 255, 255 }; alpha = null;
@@ -1795,6 +1817,8 @@ internal sealed class PdfWriter
         // Parse IHDR (always first chunk, at offset 8)
         width  = (data[16] << 24) | (data[17] << 16) | (data[18] << 8) | data[19];
         height = (data[20] << 24) | (data[21] << 16) | (data[22] << 8) | data[23];
+        if (width <= 0 || height <= 0) return false;
+        if ((long)width * height > MaxPngPixels) return false;
         var bitDepth  = data[24];
         var colorType = data[25];
         var interlace = data[28]; // 0=none, 1=Adam7
@@ -1842,13 +1866,22 @@ internal sealed class PdfWriter
         var compressed = idatStream.ToArray();
         if (compressed.Length < 3) return false;
 
+        // Bound decompressed output independently of the declared width/height: a malicious IDAT
+        // stream can inflate to far more than what the pixel grid implies (a decompression bomb),
+        // regardless of interlacing. 4 bytes/pixel covers the worst case (RGBA), plus one filter
+        // byte per row across all 7 Adam7 passes combined, plus slack for chunk framing.
+        var maxDecompressedBytes = (long)width * height * 4 + (long)height * 8 + 4096;
+
         byte[] decompressed;
         try
         {
             using var inputMs = new System.IO.MemoryStream(compressed, 2, compressed.Length - 2); // skip zlib header
             using var outputMs = new System.IO.MemoryStream();
             using (var deflate = new System.IO.Compression.DeflateStream(inputMs, System.IO.Compression.CompressionMode.Decompress))
-                deflate.CopyTo(outputMs);
+            {
+                if (!TryCopyWithLimit(deflate, outputMs, maxDecompressedBytes))
+                    return false;
+            }
             decompressed = outputMs.ToArray();
         }
         catch

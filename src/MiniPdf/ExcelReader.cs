@@ -9,6 +9,13 @@ namespace MiniSoftware;
 /// </summary>
 internal static class ExcelReader
 {
+    // Excel's real worksheet limits (columns A..XFD, rows 1..1048576). Gap-filling logic below
+    // walks from the last seen row/column up to a value parsed straight out of attacker-controlled
+    // cell/row reference attributes, so these caps bound that walk to what a real spreadsheet could
+    // ever contain instead of letting a single crafted "XFD1"-style reference drive unbounded allocation.
+    private const int MaxColumnIndex = 16384; // 1-based
+    private const int MaxRowNumber = 1_048_576; // 1-based
+
     private sealed record DxfStyleInfo
     {
         public PdfColor? FontColor { get; init; }
@@ -159,7 +166,7 @@ internal static class ExcelReader
         var entry = archive.GetEntry("xl/sharedStrings.xml");
         if (entry == null) return (strings, boldPrefixLengths);
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
         var ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
 
@@ -193,7 +200,7 @@ internal static class ExcelReader
         var entry = archive.GetEntry("xl/workbook.xml");
         if (entry == null) return (result, printAreas, printTitleRows);
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
         var ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
 
@@ -261,7 +268,7 @@ internal static class ExcelReader
         var entry = archive.GetEntry("xl/styles.xml");
         if (entry == null) return styles;
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
         var ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
 
@@ -313,7 +320,7 @@ internal static class ExcelReader
         var entry = archive.GetEntry("xl/styles.xml");
         if (entry == null) return borders;
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
         var ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
 
@@ -358,7 +365,7 @@ internal static class ExcelReader
         var entry = archive.GetEntry("xl/styles.xml");
         if (entry == null) return result;
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
         var ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
 
@@ -421,7 +428,7 @@ internal static class ExcelReader
         if (relsEntry == null) return;
 
         var tableFiles = new List<string>();
-        using (var relsStream = relsEntry.Open())
+        using (var relsStream = relsEntry.OpenBounded())
         {
             var relsDoc = XDocument.Load(relsStream);
             foreach (var rel in relsDoc.Descendants())
@@ -441,7 +448,7 @@ internal static class ExcelReader
             if (tableEntry == null) continue;
 
             string? refAttr, styleName;
-            using (var tableStream = tableEntry.Open())
+            using (var tableStream = tableEntry.OpenBounded())
             {
                 var tableDoc = XDocument.Load(tableStream);
                 refAttr = tableDoc.Root?.Attribute("ref")?.Value;
@@ -492,7 +499,7 @@ internal static class ExcelReader
         if (relsEntry == null) return;
 
         var tableFiles = new List<string>();
-        using (var relsStream = relsEntry.Open())
+        using (var relsStream = relsEntry.OpenBounded())
         {
             var relsDoc = XDocument.Load(relsStream);
             foreach (var rel in relsDoc.Descendants())
@@ -513,7 +520,7 @@ internal static class ExcelReader
         if (stylesEntry == null) return;
 
         Dictionary<string, (int HeaderDxf, int TotalDxf, int WholeDxf, int FirstColDxf, int FirstRowStripeDxf, int SecondRowStripeDxf)> tableStyleMap;
-        using (var stylesStream = stylesEntry.Open())
+        using (var stylesStream = stylesEntry.OpenBounded())
         {
             var stylesDoc = XDocument.Load(stylesStream);
             var ns = stylesDoc.Root?.GetDefaultNamespace() ?? XNamespace.None;
@@ -558,7 +565,7 @@ internal static class ExcelReader
             bool showRowStripes = false;
             var columnDataDxfs = new List<int>();
             var columnTotalsDxfs = new List<int>();
-            using (var tableStream = tableEntry.Open())
+            using (var tableStream = tableEntry.OpenBounded())
             {
                 var tableDoc = XDocument.Load(tableStream);
                 var root = tableDoc.Root;
@@ -749,7 +756,7 @@ internal static class ExcelReader
         var entry = archive.GetEntry("xl/styles.xml");
         if (entry == null) return (fontIndices, fillIndices, numFmtIds, alignments, verticalAlignments, borderIndices, wrapTexts, indents);
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
         var ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
 
@@ -797,7 +804,7 @@ internal static class ExcelReader
         var entry = archive.GetEntry("xl/styles.xml");
         if (entry == null) return fills;
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
         var ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
 
@@ -970,7 +977,7 @@ internal static class ExcelReader
         var themeEntry = archive.GetEntry("xl/theme/theme1.xml");
         if (themeEntry != null)
         {
-            using var ts = themeEntry.Open();
+            using var ts = themeEntry.OpenBounded();
             var tdoc = XDocument.Load(ts);
             var ans = XNamespace.Get("http://schemas.openxmlformats.org/drawingml/2006/main");
             var minorFont = tdoc.Descendants(ans + "minorFont").FirstOrDefault();
@@ -984,7 +991,7 @@ internal static class ExcelReader
         var stylesEntry = archive.GetEntry("xl/styles.xml");
         if (stylesEntry != null)
         {
-            using var ss = stylesEntry.Open();
+            using var ss = stylesEntry.OpenBounded();
             var sdoc = XDocument.Load(ss);
             var sNs = sdoc.Root?.GetDefaultNamespace() ?? XNamespace.None;
             var firstFont = sdoc.Descendants(sNs + "font").FirstOrDefault();
@@ -1006,7 +1013,7 @@ internal static class ExcelReader
         var stylesEntry = archive.GetEntry("xl/styles.xml");
         if (stylesEntry == null) return 11f;
 
-        using var ss = stylesEntry.Open();
+        using var ss = stylesEntry.OpenBounded();
         var sdoc = XDocument.Load(ss);
         var ns = sdoc.Root?.GetDefaultNamespace() ?? XNamespace.None;
 
@@ -1041,7 +1048,7 @@ internal static class ExcelReader
         var entry = archive.GetEntry("xl/theme/theme1.xml");
         if (entry == null) return colors;
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
         var ns = XNamespace.Get("http://schemas.openxmlformats.org/drawingml/2006/main");
         var scheme = doc.Descendants(ns + "clrScheme").FirstOrDefault();
@@ -1079,7 +1086,7 @@ internal static class ExcelReader
         var entry = archive.GetEntry("xl/styles.xml");
         if (entry == null) return formats;
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
         var ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
 
@@ -1107,7 +1114,7 @@ internal static class ExcelReader
         var entry = archive.GetEntry("xl/styles.xml");
         if (entry == null) return result;
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
         var ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
 
@@ -1233,7 +1240,7 @@ internal static class ExcelReader
     private static List<(string Sqref, string Type, string Operator, string Formula, int DxfId)> ReadConditionalFormatting(ZipArchiveEntry entry)
     {
         var rules = new List<(string, string, string, string, int)>();
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
         var ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
 
@@ -1264,7 +1271,7 @@ internal static class ExcelReader
         var entry = archive.GetEntry("xl/workbook.xml");
         if (entry == null) return values;
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
         var ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
 
@@ -1737,7 +1744,7 @@ internal static class ExcelReader
     {
         var rows = new List<List<ExcelCell>>();
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
         var ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
 
@@ -1775,7 +1782,8 @@ internal static class ExcelReader
                 if (colFill == null) continue;
                 if (!int.TryParse(col.Attribute("min")?.Value, out var minCol)) continue;
                 if (!int.TryParse(col.Attribute("max")?.Value, out var maxCol)) continue;
-                for (int ci = minCol; ci <= maxCol && ci <= 16384; ci++)
+                if (minCol < 1) continue;
+                for (int ci = minCol; ci <= maxCol && ci <= MaxColumnIndex; ci++)
                     colDefaultFill[ci] = colFill;
             }
         }
@@ -1789,6 +1797,7 @@ internal static class ExcelReader
             var rowNumAttr = row.Attribute("r")?.Value;
             if (int.TryParse(rowNumAttr, out var rowNumber))
             {
+                rowNumber = Compat.Clamp(rowNumber, 0, MaxRowNumber);
                 // Insert empty rows for any gaps
                 while (lastRowNumber + 1 < rowNumber)
                 {
@@ -2001,17 +2010,24 @@ internal static class ExcelReader
     private static int ParseColumnIndex(string cellReference)
     {
         var col = 0;
+        var letterCount = 0;
         foreach (var c in cellReference)
         {
             if (char.IsLetter(c))
             {
+                // A real column reference is at most 3 letters ("XFD" = 16384); beyond that,
+                // stop accumulating so a crafted reference like "AAAAAAAAAAAAAA1" can't overflow
+                // or blow past MaxColumnIndex before the clamp below even runs.
+                if (letterCount >= 3) break;
                 col = col * 26 + (char.ToUpper(c) - 'A' + 1);
+                letterCount++;
             }
             else
             {
                 break;
             }
         }
+        col = Math.Min(col, MaxColumnIndex);
         return col > 0 ? col - 1 : 0;
     }
 
@@ -2912,7 +2928,7 @@ internal static class ExcelReader
             string.Equals(value, "1", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
         var ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
 
@@ -2951,13 +2967,14 @@ internal static class ExcelReader
                 System.Globalization.NumberStyles.Any,
                 System.Globalization.CultureInfo.InvariantCulture,
                 out var colWidth)) continue;
+            if (minCol < 1) continue;
 
             var comparisonDefault = defaultWidth > 0f ? defaultWidth : 8.43f;
             var differsFromDefault = Math.Abs(colWidth - comparisonDefault) > 0.01f;
             if (!hasCustomWidth && !hasBestFitWidth && !differsFromDefault && !isHidden)
                 continue;
 
-            for (var c = minCol; c <= maxCol; c++)
+            for (var c = minCol; c <= maxCol && c <= MaxColumnIndex; c++)
                 widths[c - 1] = isHidden ? 0f : colWidth; // hidden columns get 0 width
         }
 
@@ -2975,7 +2992,7 @@ internal static class ExcelReader
         float marginLeft = -1, marginRight = -1, marginTop = -1, marginBottom = -1, footerMargin = -1;
         var fitToPage = false;
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
         var ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
 
@@ -3089,7 +3106,7 @@ internal static class ExcelReader
         var customHeightRows = new HashSet<int>();
         var defaultHeight = 15f; // Excel default row height in points
 
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
         var ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
 
@@ -3139,7 +3156,7 @@ internal static class ExcelReader
     private static HashSet<int> ReadRowBreaks(ZipArchiveEntry entry)
     {
         var breaks = new HashSet<int>();
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
         var ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
 
@@ -3162,7 +3179,7 @@ internal static class ExcelReader
     private static List<(int, int, int, int)> ReadMergedCells(ZipArchiveEntry entry)
     {
         var result = new List<(int, int, int, int)>();
-        using var stream = entry.Open();
+        using var stream = entry.OpenBounded();
         var doc = XDocument.Load(stream);
         var ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
 
@@ -3212,7 +3229,7 @@ internal static class ExcelReader
         if (relsEntry == null) return images;
 
         string? drawingFileName = null;
-        using (var relsStream = relsEntry.Open())
+        using (var relsStream = relsEntry.OpenBounded())
         {
             var relsDoc = XDocument.Load(relsStream);
             var drawingRel = relsDoc.Descendants()
@@ -3235,7 +3252,7 @@ internal static class ExcelReader
         if (drawingRelsEntry == null) return images;
 
         var rIdToMedia = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        using (var drStream = drawingRelsEntry.Open())
+        using (var drStream = drawingRelsEntry.OpenBounded())
         {
             var drDoc = XDocument.Load(drStream);
             foreach (var rel in drDoc.Descendants())
@@ -3268,7 +3285,7 @@ internal static class ExcelReader
         }
 
         // Step 3: Parse the drawing XML for image anchors
-        using var dStream = drawingEntry.Open();
+        using var dStream = drawingEntry.OpenBounded();
         var dDoc = XDocument.Load(dStream);
 
         var xdr = XNamespace.Get("http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing");
@@ -3331,7 +3348,7 @@ internal static class ExcelReader
                     byte[] gImgData;
                     using (var ms = new System.IO.MemoryStream())
                     {
-                        using var imS = gMediaEntry.Open();
+                        using var imS = gMediaEntry.OpenBounded();
                         imS.CopyTo(ms);
                         gImgData = ms.ToArray();
                     }
@@ -3452,7 +3469,7 @@ internal static class ExcelReader
             byte[] imageData;
             using (var ms = new System.IO.MemoryStream())
             {
-                using var imgStream = mediaEntry.Open();
+                using var imgStream = mediaEntry.OpenBounded();
                 imgStream.CopyTo(ms);
                 imageData = ms.ToArray();
             }
@@ -3490,7 +3507,7 @@ internal static class ExcelReader
         if (relsEntry == null) return shapes;
 
         string drawingPath;
-        using (var relsStream = relsEntry.Open())
+        using (var relsStream = relsEntry.OpenBounded())
         {
             var relsDoc = XDocument.Load(relsStream);
             var drawingRel = relsDoc.Descendants().FirstOrDefault(e =>
@@ -3504,7 +3521,7 @@ internal static class ExcelReader
         var drawingEntry = archive.GetEntry(drawingPath);
         if (drawingEntry == null) return shapes;
 
-        using var dStream = drawingEntry.Open();
+        using var dStream = drawingEntry.OpenBounded();
         var dDoc = XDocument.Load(dStream);
         var xdr = XNamespace.Get("http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing");
         var a = XNamespace.Get("http://schemas.openxmlformats.org/drawingml/2006/main");
@@ -3798,7 +3815,7 @@ internal static class ExcelReader
         if (relsEntry == null) return charts;
 
         string? drawingFileName = null;
-        using (var relsStream = relsEntry.Open())
+        using (var relsStream = relsEntry.OpenBounded())
         {
             var relsDoc = XDocument.Load(relsStream);
             var drawingRel = relsDoc.Descendants()
@@ -3820,7 +3837,7 @@ internal static class ExcelReader
         if (drawingRelsEntry == null) return charts;
 
         var rIdToChart = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        using (var drStream = drawingRelsEntry.Open())
+        using (var drStream = drawingRelsEntry.OpenBounded())
         {
             var drDoc = XDocument.Load(drStream);
             foreach (var rel in drDoc.Descendants())
@@ -3853,7 +3870,7 @@ internal static class ExcelReader
         if (rIdToChart.Count == 0) return charts;
 
         // Step 3: Parse drawing XML for chart anchors (graphicFrame elements)
-        using var dStream = drawingEntry.Open();
+        using var dStream = drawingEntry.OpenBounded();
         var dDoc = XDocument.Load(dStream);
 
         var xdr = XNamespace.Get("http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing");
@@ -3929,7 +3946,7 @@ internal static class ExcelReader
 
             if (chartEntry != null)
             {
-                using var cStream = chartEntry.Open();
+                using var cStream = chartEntry.OpenBounded();
                 var cDoc = XDocument.Load(cStream);
                 var cns = XNamespace.Get("http://schemas.openxmlformats.org/drawingml/2006/chart");
 
